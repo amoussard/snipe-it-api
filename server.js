@@ -11,7 +11,6 @@ var StatusLabelCheckinStatus = [
     STATUS_DEPLOYED
 ];
 var StatusLabelCheckoutStatus = [
-    // READY_TO_DEPLOY
     STATUS_READY_TO_DEPLOY
 ];
 var StatusLabelRepareStatus = [
