@@ -20,6 +20,7 @@ var StatusLabelRepareStatus = [
 
 var restify = require('restify');
 var config = require('config');
+var md5 = require('MD5');
 var knex = require('knex')({
     client: 'mysql',
     connection: config.database
@@ -91,6 +92,7 @@ server.get('/hardware/findOne', function (req, res, next) {
 
     if (req.params.macAddress) {
         assetQuery.where('assets.asset_tag', req.params.macAddress);
+        assetQuery.orWhere('assets.barcode', req.params.macAddress);
     }
 
     assetQuery.exec(function(err, rows) {
@@ -113,6 +115,7 @@ var getAssetQuery = function (assetId) {
         .select('assets.serial as serial')
         .select('assets.model_id as model_id')
         .select('assets.notes as notes')
+        .select('assets.barcode as barcode')
         .select(knex.raw('IF(assets.status_id IN ('+StatusLabelCheckinStatus.join()+') AND assets.location_id <> '+LOCATION_NUMEDIA+', 1, 0) as can_checkin'))
         .select(knex.raw('IF(assets.status_id IN ('+StatusLabelCheckoutStatus.join()+') AND assets.location_id = '+LOCATION_NUMEDIA+', 1, 0) as can_checkout'))
         .select(knex.raw('IF(assets.status_id IN ('+StatusLabelRepareStatus.join()+') AND assets.location_id = '+LOCATION_NUMEDIA+', 1, 0) as can_repare'))
@@ -251,7 +254,8 @@ server.post('/hardware/:id/checkin', function (req, res, next) {
         .where('assets.id', assetId)
         .update({
             status_id: STATUS_TESTING,
-            location_id: LOCATION_NUMEDIA
+            location_id: LOCATION_NUMEDIA,
+            updated_at: knex.raw('NOW()')
         });
 
     updateAssetQuery.exec(function(err, rows) {
@@ -307,7 +311,8 @@ server.post('/hardware/:id/repare', function (req, res, next) {
         .where('assets.id', assetId)
         .update({
             status_id: STATUS_OUT_FOR_REPAIR,
-            location_id: LOCATION_EXABIT
+            location_id: LOCATION_EXABIT,
+            updated_at: knex.raw('NOW()')
         });
 
     updateAssetQuery.exec(function(err, rows) {
@@ -365,7 +370,8 @@ server.post('/hardware/:id/checkout', function (req, res, next) {
         .where('assets.id', assetId)
         .update({
             status_id: STATUS_DEPLOYED,
-            location_id: locationId
+            location_id: locationId,
+            updated_at: knex.raw('NOW()')
         });
 
     updateAssetQuery.exec(function(err, rows) {
@@ -405,7 +411,159 @@ server.post('/hardware/:id/checkout', function (req, res, next) {
 });
 
 /**
- * Save an asset
+ * Generate barcode of an asset
+ */
+server.put('/hardware/:id/barcode', function (req, res, next) {
+    var assetId = req.params.id;
+
+    if (assetId == undefined) {
+        res.send({
+            success: false,
+            error: "Asset id is undefined."
+        });
+        return next();
+    }
+
+    var assetQuery = getAssetQuery(assetId);
+
+    assetQuery.exec(function(err, rows) {
+        if (err) {
+            res.send({
+                success: false,
+                error: err
+            });
+            return next();
+        }
+
+        var asset = rows[0];
+        var barcode = md5(
+            (asset.serial ? asset.serial : '')
+            +(asset.macAddress ? asset.macAddress : '')
+            +(asset.model_id ? asset.model_id: '')
+        );
+
+        var updateAssetQuery = knex('assets')
+            .where('assets.id', assetId)
+            .update({
+                barcode: barcode,
+                updated_at: knex.raw('NOW()')
+            });
+
+        updateAssetQuery.exec(function(err, rows) {
+            if (err) {
+                res.send({
+                    success: false,
+                    error: err
+                });
+                return next();
+            }
+
+            var insertLogQuery = knex('asset_logs')
+                .insert({
+                    checkedout_to: asset.location_id,
+                    asset_id: asset.id,
+                    location_id: asset.location_id,
+                    asset_type: 'hardware',
+                    note: null,
+                    user_id: 1,
+                    action_type: 'Generate barcode'
+                });
+
+            insertLogQuery.exec(function (err, rows) {
+                if (err) {
+                    res.send({
+                        success: false,
+                        error: err
+                    });
+                    return next();
+                }
+                res.send({
+                    success: true,
+                    barcode: barcode
+                });
+                return next();
+            });
+        });
+    });
+});
+
+/**
+ * Create an asset
+ */
+server.post('/hardware', function (req, res, next) {
+    var name = req.params.name;
+    if (name == undefined) {
+        res.send({
+            success: false,
+            error: "Asset name must be fill."
+        });
+        return next();
+    }
+
+    var insertAssetQuery = knex('assets')
+        .insert({
+            name: req.params.name,
+            asset_tag: req.params.mac,
+            serial: req.params.serial,
+            status_id: STATUS_TESTING,
+            model_id: req.params.model_id,
+            location_id: req.params.location_id,
+            notes: req.params.notes,
+            assigned_to: 1,
+            user_id: 1,
+            archived: 0,
+            physical: 1,
+            depreciate: 0,
+            created_at: knex.raw('NOW()'),
+            updated_at: knex.raw('NOW()'),
+            barcode: md5(
+                (req.params.serial ? req.params.serial : '')
+                +(req.params.mac ? req.params.mac : '')
+                +(req.params.model_id ? req.params.model_id : '')
+            )
+        }, 'id');
+
+    insertAssetQuery.exec(function(err, rows) {
+        if (err) {
+            res.send({
+                success: false,
+                error: err
+            });
+            return next();
+        }
+
+        var assetId = rows[0];
+
+        var insertLogQuery = knex('asset_logs')
+            .insert({
+                checkedout_to: req.params.location_id,
+                asset_id: assetId,
+                location_id: req.params.location_id,
+                asset_type: 'hardware',
+                note: '',
+                user_id: 1,
+                action_type: 'Creation'
+            });
+
+        insertLogQuery.exec(function (err, rows) {
+            if (err) {
+                res.send({
+                    success: false,
+                    error: err
+                });
+                return next();
+            }
+            res.send({
+                success: true,
+                id: assetId
+            });
+            return next();
+        });
+    });
+});
+
+/**
+ * Update an asset
  */
 server.put('/hardware/:id', function (req, res, next) {
     var assetId = req.params.id;
