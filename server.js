@@ -20,11 +20,13 @@ var StatusLabelRepareStatus = [
 
 var restify = require('restify');
 var config = require('config');
-var md5 = require('MD5');
 var knex = require('knex')({
     client: 'mysql',
     connection: config.database
 });
+var barcode = require('barcode');
+var fs = require('fs');
+var gm = require('gm');
 
 var server = restify.createServer({
     name: 'snipe-it-api',
@@ -60,6 +62,10 @@ server.get('/hardware', function (req, res, next) {
         .offset((page - 1) * perPage);
 
     assetsQuery.exec(function(err, rows) {
+        if (err) {
+            res.send({ success: false, error: err });
+            return next();
+        }
         res.send(rows);
         return next();
     });
@@ -411,83 +417,6 @@ server.post('/hardware/:id/checkout', function (req, res, next) {
 });
 
 /**
- * Generate barcode of an asset
- */
-server.put('/hardware/:id/barcode', function (req, res, next) {
-    var assetId = req.params.id;
-
-    if (assetId == undefined) {
-        res.send({
-            success: false,
-            error: "Asset id is undefined."
-        });
-        return next();
-    }
-
-    var assetQuery = getAssetQuery(assetId);
-
-    assetQuery.exec(function(err, rows) {
-        if (err) {
-            res.send({
-                success: false,
-                error: err
-            });
-            return next();
-        }
-
-        var asset = rows[0];
-        var barcode = md5(
-            (asset.serial ? asset.serial : '')
-            +(asset.macAddress ? asset.macAddress : '')
-            +(asset.model_id ? asset.model_id: '')
-        );
-
-        var updateAssetQuery = knex('assets')
-            .where('assets.id', assetId)
-            .update({
-                barcode: barcode,
-                updated_at: knex.raw('NOW()')
-            });
-
-        updateAssetQuery.exec(function(err, rows) {
-            if (err) {
-                res.send({
-                    success: false,
-                    error: err
-                });
-                return next();
-            }
-
-            var insertLogQuery = knex('asset_logs')
-                .insert({
-                    checkedout_to: asset.location_id,
-                    asset_id: asset.id,
-                    location_id: asset.location_id,
-                    asset_type: 'hardware',
-                    note: null,
-                    user_id: 1,
-                    action_type: 'Generate barcode'
-                });
-
-            insertLogQuery.exec(function (err, rows) {
-                if (err) {
-                    res.send({
-                        success: false,
-                        error: err
-                    });
-                    return next();
-                }
-                res.send({
-                    success: true,
-                    barcode: barcode
-                });
-                return next();
-            });
-        });
-    });
-});
-
-/**
  * Create an asset
  */
 server.post('/hardware', function (req, res, next) {
@@ -515,12 +444,7 @@ server.post('/hardware', function (req, res, next) {
             physical: 1,
             depreciate: 0,
             created_at: knex.raw('NOW()'),
-            updated_at: knex.raw('NOW()'),
-            barcode: md5(
-                (req.params.serial ? req.params.serial : '')
-                +(req.params.mac ? req.params.mac : '')
-                +(req.params.model_id ? req.params.model_id : '')
-            )
+            updated_at: knex.raw('NOW()')
         }, 'id');
 
     insertAssetQuery.exec(function(err, rows) {
@@ -627,6 +551,80 @@ server.put('/hardware/:id', function (req, res, next) {
                 success: true
             });
             return next();
+        });
+    });
+});
+
+
+ntos = function (n, l) {
+    return String("00000000" + n).slice(-l);
+};
+
+/**
+ * Generate barcode
+ */
+server.get('/hardware/:id/barcode', function (req, res, next) {
+
+    var assetId = req.params.id;
+
+    if (assetId == undefined) {
+        res.send({
+            success: false,
+            error: "Asset id is undefined."
+        });
+        return next();
+    }
+
+    var assetQuery = getAssetQuery(assetId);
+
+    assetQuery.exec(function(err, rows) {
+        if (err) {
+            res.send({
+                success: false,
+                error: err
+            });
+            return next();
+        }
+
+        var asset = rows[0];
+        var code39 = barcode('code39', {
+            data: ntos(asset.id, 8),
+            width: 250,
+            height: 40,
+            type: 'png'
+        });
+
+        res.writeHead(200, {'Content-Type': 'image/png' });
+        code39.saveImage('/tmp/barcode.png', function (err) {
+            if (err) {
+                res.send({
+                    success: false,
+                    error: err
+                });
+                return next();
+            }
+
+            var filestream = gm()
+                .in('-page', '+0+0')  // Custom place for each of the images
+                .in('images/LabelBg.bmp')
+                .in('-page', '+25+100')  // Custom place for each of the images
+                .in('/tmp/barcode.png')
+                .fontSize(20)
+                .drawText(60, 160, asset.macAddress)
+                .mosaic()  // Merges the images as a matrix
+                .stream('png', function (err, stream) {
+                    if (err) {
+                        res.send({
+                            success: false,
+                            error: err
+                        });
+                        return next();
+                    }
+                    stream.pipe(res);
+                });
+            filestream.on('end', function () {
+                fs.unlink('/tmp/barcode.png');
+            });
         });
     });
 });
