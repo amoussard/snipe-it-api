@@ -594,7 +594,7 @@ server.get('/hardware/:id/barcode', function (req, res, next) {
             type: 'png'
         });
 
-        res.writeHead(200, {'Content-Type': 'image/png' });
+
         code39.saveImage('/tmp/barcode.png', function (err) {
             if (err) {
                 res.send({
@@ -620,6 +620,7 @@ server.get('/hardware/:id/barcode', function (req, res, next) {
                         });
                         return next();
                     }
+                    res.writeHead(200, {'Content-Type': 'image/png' });
                     stream.pipe(res);
                 });
             filestream.on('end', function () {
