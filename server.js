@@ -98,7 +98,7 @@ server.get('/hardware/findOne', function (req, res, next) {
 
     if (req.params.macAddress) {
         assetQuery.where('assets.asset_tag', req.params.macAddress);
-        assetQuery.orWhere('assets.barcode', req.params.macAddress);
+        assetQuery.orWhere('assets.id', parseInt(req.params.macAddress));
     }
 
     assetQuery.exec(function(err, rows) {
